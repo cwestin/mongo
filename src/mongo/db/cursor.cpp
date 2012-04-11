@@ -15,11 +15,23 @@
  */
 
 #include "pch.h"
+#include "cursor.h"
 #include "pdfile.h"
 #include "curop-inl.h"
+#include "ops/query.h"
 
 namespace mongo {
 
+    shared_ptr<ExplainRecordingStrategy>
+    Cursor::createExplainRecordingStrategy(
+        const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+        const shared_ptr<Cursor> &pThis) {
+        
+        shared_ptr<ExplainRecordingStrategy> pERS(
+            new SimpleCursorExplainStrategy(ancillaryInfo, pThis));
+        return pERS;
+    }
+    
     bool BasicCursor::advance() {
         killCurrentOp.checkForInterrupt();
         if ( eof() ) {

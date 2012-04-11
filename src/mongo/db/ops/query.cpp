@@ -28,6 +28,7 @@
 #include "../queryoptimizer.h"
 #include "../../s/d_logic.h"
 #include "../../server.h"
+#include "../explain.h"
 #include "../queryoptimizercursor.h"
 
 namespace mongo {
@@ -209,84 +210,6 @@ namespace mongo {
         b.decouple();
 
         return qr;
-    }
-
-    ExplainRecordingStrategy::ExplainRecordingStrategy
-    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo ) :
-    _ancillaryInfo( ancillaryInfo ) {
-    }
-
-    shared_ptr<ExplainQueryInfo> ExplainRecordingStrategy::doneQueryInfo() {
-        shared_ptr<ExplainQueryInfo> ret = _doneQueryInfo();
-        ret->setAncillaryInfo( _ancillaryInfo );
-        return ret;
-    }
-    
-    NoExplainStrategy::NoExplainStrategy() :
-    ExplainRecordingStrategy( ExplainQueryInfo::AncillaryInfo() ) {
-    }
-
-    shared_ptr<ExplainQueryInfo> NoExplainStrategy::_doneQueryInfo() {
-        verify( false );
-        return shared_ptr<ExplainQueryInfo>();
-    }
-    
-    MatchCountingExplainStrategy::MatchCountingExplainStrategy
-    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo ) :
-    ExplainRecordingStrategy( ancillaryInfo ),
-    _orderedMatches() {
-    }
-    
-    void MatchCountingExplainStrategy::noteIterate( bool match, bool orderedMatch,
-                                                   bool loadedRecord, bool chunkSkip ) {
-        _noteIterate( match, orderedMatch, loadedRecord, chunkSkip );
-        if ( orderedMatch ) {
-            ++_orderedMatches;
-        }
-    }
-    
-    SimpleCursorExplainStrategy::SimpleCursorExplainStrategy
-    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
-     const shared_ptr<Cursor> &cursor ) :
-    MatchCountingExplainStrategy( ancillaryInfo ),
-    _cursor( cursor ),
-    _explainInfo( new ExplainSinglePlanQueryInfo() ) {
-    }
- 
-    void SimpleCursorExplainStrategy::notePlan( bool scanAndOrder, bool indexOnly ) {
-        _explainInfo->notePlan( *_cursor, scanAndOrder, indexOnly );
-    }
-
-    void SimpleCursorExplainStrategy::_noteIterate( bool match, bool orderedMatch,
-                                                   bool loadedRecord, bool chunkSkip ) {
-        _explainInfo->noteIterate( match, loadedRecord, chunkSkip, *_cursor );
-    }
-
-    void SimpleCursorExplainStrategy::noteYield() {
-        _explainInfo->noteYield();
-    }
-
-    shared_ptr<ExplainQueryInfo> SimpleCursorExplainStrategy::_doneQueryInfo() {
-        _explainInfo->noteDone( *_cursor );
-        return _explainInfo->queryInfo();
-    }
-
-    QueryOptimizerCursorExplainStrategy::QueryOptimizerCursorExplainStrategy
-    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
-     const shared_ptr<QueryOptimizerCursor> &cursor ) :
-    MatchCountingExplainStrategy( ancillaryInfo ),
-    _cursor( cursor ) {
-    }
-    
-    void QueryOptimizerCursorExplainStrategy::_noteIterate( bool match, bool orderedMatch,
-                                                           bool loadedRecord, bool chunkSkip ) {
-        // Note ordered matches only; if an unordered plan is selected, the explain result will
-        // be updated with reviseN().
-        _cursor->noteIterate( orderedMatch, loadedRecord, chunkSkip );
-    }
-
-    shared_ptr<ExplainQueryInfo> QueryOptimizerCursorExplainStrategy::_doneQueryInfo() {
-        return _cursor->explainQueryInfo();
     }
 
     ResponseBuildStrategy::ResponseBuildStrategy( const ParsedQuery &parsedQuery,
@@ -546,17 +469,14 @@ namespace mongo {
         if ( !_parsedQuery.isExplain() ) {
             return shared_ptr<ExplainRecordingStrategy>( new NoExplainStrategy() );
         }
+
         ExplainQueryInfo::AncillaryInfo ancillaryInfo;
         ancillaryInfo._oldPlan = oldPlan;
-        if ( _queryOptimizerCursor ) {
-            return shared_ptr<ExplainRecordingStrategy>
-            ( new QueryOptimizerCursorExplainStrategy( ancillaryInfo, _queryOptimizerCursor ) );
-        }
-        shared_ptr<ExplainRecordingStrategy> ret
-        ( new SimpleCursorExplainStrategy( ancillaryInfo, _cursor ) );
-        ret->notePlan( queryPlan.valid() && queryPlan._scanAndOrderRequired,
-                      queryPlan._keyFieldsOnly );
-        return ret;
+        shared_ptr<ExplainRecordingStrategy> pERS(
+            _cursor->createExplainRecordingStrategy(ancillaryInfo, _cursor));
+        pERS->notePlan( queryPlan.valid() && queryPlan._scanAndOrderRequired,
+                        queryPlan._keyFieldsOnly );
+        return pERS;
     }
 
     shared_ptr<ResponseBuildStrategy> QueryResponseBuilder::newResponseBuildStrategy

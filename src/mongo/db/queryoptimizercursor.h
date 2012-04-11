@@ -88,7 +88,12 @@ namespace mongo {
      */
     class QueryOptimizerCursor : public Cursor {
     public:
-        
+        // virtuals from class Cursor
+        virtual shared_ptr<ExplainRecordingStrategy>
+            createExplainRecordingStrategy(
+                const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+                const shared_ptr<Cursor> &pThis);
+
         /** Summarizes the candidate plans that may run for a query. */
         class CandidatePlans {
         public:

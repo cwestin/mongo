@@ -17,11 +17,18 @@
 
 #pragma once
 
-#include "cursor.h"
+#include "../pch.h"
+#include <boost/shared_ptr.hpp>
+#include <list>
+#include "../bson/bsonobj.h"
 #include "../util/timer.h"
 
 namespace mongo {
-    
+
+    using namespace boost;
+
+    class Cursor;
+
     /**
      * Note: by default we filter out allPlans and oldPlan in the shell's
      * explain() function. If you add any recursive structures, make sure to
@@ -39,9 +46,9 @@ namespace mongo {
         bool _running;
         int _duration;
     };
-    
+
     class ExplainClauseInfo;
-    
+
     /** Data describing execution of a query plan. */
     class ExplainPlanInfo {
     public:
@@ -108,7 +115,7 @@ namespace mongo {
 
     private:
         const ExplainPlanInfo &virtualPickedPlan() const;
-        list<shared_ptr<const ExplainPlanInfo> > _plans;
+        std::list<shared_ptr<const ExplainPlanInfo> > _plans;
         long long _n;
         long long _nscannedObjects;
         long long _nChunkSkips;
@@ -136,7 +143,7 @@ namespace mongo {
     private:
         static string server();
         
-        list<shared_ptr<ExplainClauseInfo> > _clauses;
+        std::list<shared_ptr<ExplainClauseInfo> > _clauses;
         AncillaryInfo _ancillaryInfo;
         DurationTimer _timer;
     };
@@ -172,6 +179,66 @@ namespace mongo {
     private:
         shared_ptr<ExplainPlanInfo> _planInfo;
         shared_ptr<ExplainQueryInfo> _queryInfo;
+    };
+
+    /** Interface for recording events that contribute to explain results. */
+    class ExplainRecordingStrategy {
+    public:
+        ExplainRecordingStrategy( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo );
+        virtual ~ExplainRecordingStrategy() {}
+        /** Note information about a single query plan. */
+        virtual void notePlan( bool scanAndOrder, bool indexOnly ) {}
+        /** Note an iteration of the query. */
+        virtual void noteIterate( bool match, bool orderedMatch, bool loadedRecord,
+                                 bool chunkSkip ) {}
+        /** Note that the query yielded. */
+        virtual void noteYield() {}
+        /** @return number of ordered matches noted. */
+        virtual long long orderedMatches() const { return 0; }
+        /** @return ExplainQueryInfo for a complete query. */
+        shared_ptr<ExplainQueryInfo> doneQueryInfo();
+    protected:
+        /** @return ExplainQueryInfo for a complete query, to be implemented by subclass. */
+        virtual shared_ptr<ExplainQueryInfo> _doneQueryInfo() = 0;
+    private:
+        ExplainQueryInfo::AncillaryInfo _ancillaryInfo;
+    };
+    
+    /** No explain events are recorded. */
+    class NoExplainStrategy : public ExplainRecordingStrategy {
+    public:
+        NoExplainStrategy();
+    private:
+        /** @asserts always. */
+        virtual shared_ptr<ExplainQueryInfo> _doneQueryInfo();
+    };
+    
+    class MatchCountingExplainStrategy : public ExplainRecordingStrategy {
+    public:
+        MatchCountingExplainStrategy( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo );
+    protected:
+        virtual void _noteIterate( bool match, bool orderedMatch, bool loadedRecord,
+                                  bool chunkSkip ) = 0;
+    private:
+        virtual void noteIterate( bool match, bool orderedMatch, bool loadedRecord,
+                                 bool chunkSkip );
+        virtual long long orderedMatches() const { return _orderedMatches; }
+        long long _orderedMatches;
+    };
+    
+    /** Record explain events for a simple cursor representing a single clause and plan. */
+    class SimpleCursorExplainStrategy : public MatchCountingExplainStrategy {
+    public:
+        SimpleCursorExplainStrategy( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+                                    const shared_ptr<Cursor> &cursor );
+    private:
+        virtual void notePlan( bool scanAndOrder, bool indexOnly );
+        virtual void _noteIterate( bool match, bool orderedMatch, bool loadedRecord,
+                                  bool chunkSkip );
+        virtual void noteYield();
+        virtual shared_ptr<ExplainQueryInfo> _doneQueryInfo();
+        shared_ptr<Cursor> _cursor;
+        shared_ptr<ExplainSinglePlanQueryInfo> _explainInfo;
     };
 
 } // namespace mongo

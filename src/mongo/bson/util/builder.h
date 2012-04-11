@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include "../inline_decls.h"
 #include "../stringdata.h"
+#include "../../util/assert_util.h"
 
 namespace mongo {
 

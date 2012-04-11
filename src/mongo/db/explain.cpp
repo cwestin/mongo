@@ -20,6 +20,7 @@
 #include "cmdline.h"
 #include "../util/net/sock.h"
 #include "../util/mongoutils/str.h"
+#include "cursor.h"
 
 namespace mongo {
     
@@ -246,5 +247,65 @@ namespace mongo {
         clauseInfo->addPlanInfo( _planInfo );
         _queryInfo->addClauseInfo( clauseInfo );
     }
+
+    ExplainRecordingStrategy::ExplainRecordingStrategy
+    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo ) :
+    _ancillaryInfo( ancillaryInfo ) {
+    }
+
+    shared_ptr<ExplainQueryInfo> ExplainRecordingStrategy::doneQueryInfo() {
+        shared_ptr<ExplainQueryInfo> ret = _doneQueryInfo();
+        ret->setAncillaryInfo( _ancillaryInfo );
+        return ret;
+    }
     
+    NoExplainStrategy::NoExplainStrategy() :
+    ExplainRecordingStrategy( ExplainQueryInfo::AncillaryInfo() ) {
+    }
+
+    shared_ptr<ExplainQueryInfo> NoExplainStrategy::_doneQueryInfo() {
+        verify( false );
+        return shared_ptr<ExplainQueryInfo>();
+    }
+    
+    MatchCountingExplainStrategy::MatchCountingExplainStrategy
+    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo ) :
+    ExplainRecordingStrategy( ancillaryInfo ),
+    _orderedMatches() {
+    }
+    
+    void MatchCountingExplainStrategy::noteIterate( bool match, bool orderedMatch,
+                                                   bool loadedRecord, bool chunkSkip ) {
+        _noteIterate( match, orderedMatch, loadedRecord, chunkSkip );
+        if ( orderedMatch ) {
+            ++_orderedMatches;
+        }
+    }
+    
+    SimpleCursorExplainStrategy::SimpleCursorExplainStrategy
+    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+     const shared_ptr<Cursor> &cursor ) :
+    MatchCountingExplainStrategy( ancillaryInfo ),
+    _cursor( cursor ),
+    _explainInfo( new ExplainSinglePlanQueryInfo() ) {
+    }
+ 
+    void SimpleCursorExplainStrategy::notePlan( bool scanAndOrder, bool indexOnly ) {
+        _explainInfo->notePlan( *_cursor, scanAndOrder, indexOnly );
+    }
+
+    void SimpleCursorExplainStrategy::_noteIterate( bool match, bool orderedMatch,
+                                                   bool loadedRecord, bool chunkSkip ) {
+        _explainInfo->noteIterate( match, loadedRecord, chunkSkip, *_cursor );
+    }
+
+    void SimpleCursorExplainStrategy::noteYield() {
+        _explainInfo->noteYield();
+    }
+
+    shared_ptr<ExplainQueryInfo> SimpleCursorExplainStrategy::_doneQueryInfo() {
+        _explainInfo->noteDone( *_cursor );
+        return _explainInfo->queryInfo();
+    }
+
 } // namespace mongo

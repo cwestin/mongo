@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <iostream>
 #include <cstdio> // sscanf
 #include <ctime>
 #include <boost/thread/thread.hpp>
@@ -155,7 +156,7 @@ namespace mongo {
         t.tv_sec = s;
         t.tv_nsec = 0;
         if ( nanosleep( &t , 0 ) ) {
-            cout << "nanosleep failed" << endl;
+            std::cout << "nanosleep failed" << std::endl;
         }
     }
     inline void sleepmicros(long long s) {
@@ -166,7 +167,7 @@ namespace mongo {
         t.tv_nsec = 1000 * ( s % 1000000 );
         struct timespec out;
         if ( nanosleep( &t , &out ) ) {
-            cout << "nanosleep failed" << endl;
+            std::cout << "nanosleep failed" << std::endl;
         }
     }
     inline void sleepmillis(long long s) {

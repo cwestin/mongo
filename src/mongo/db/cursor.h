@@ -20,10 +20,12 @@
 
 #include "jsobj.h"
 #include "diskloc.h"
+#include "explain.h"
 #include "matcher.h"
 
 namespace mongo {
 
+    class ExplainRecordingStrategy;
     class NamespaceDetails;
     class Record;
     class CoveredIndexMatcher;
@@ -194,6 +196,39 @@ namespace mongo {
         }
 
         virtual void explainDetails( BSONObjBuilder& b ) { return; }
+
+        /**
+         * Create the explain recording strategy for this Cursor.
+
+         * In it's current form, this is a little peculiar because of
+         * historical reasons.  The Strategy was originally created from
+         * outside, rather than inside, leading the the pThis parameter
+         * here.
+         *
+         * Given the current surrounding structure, this also avoids creating
+         * a circular reference, by avoiding the Cursor hanging on to the
+         * recording strategy, which in turn hangs on to the cursor.  Fixing
+         * this could lead to a different re-factoring where the strategy
+         * is owned by the cursor (and handed out on request), but doesn't
+         * need to use a smart pointer to refer back to its owner.
+         *
+         * LATER - fix cursor factories at the start of
+         * queryWithQueryOptimizer() (in query.cpp) to create the recording
+         * strategy themselves, where they will have a shared_ptr<> before
+         * it gets returned.  Another shorter-term alternative with less
+         * refactoring would be to convert it to an intrusive_ptr<>, because
+         * then it is possible to refer to a naked object without being given
+         * an owning shared_ptr<> to start.
+         *
+         * @param ancillaryInfo extra information about the query
+         * @param pThis the external reference to this cursor
+         *   usually owned by the current caller of this function
+         * @returns the recording strategy
+         */
+        virtual shared_ptr<ExplainRecordingStrategy>
+            createExplainRecordingStrategy(
+                const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+                const shared_ptr<Cursor> &pThis);
     };
 
     // strategy object implementing direction of traversal.

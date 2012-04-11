@@ -285,6 +285,63 @@ namespace mongo {
         shared_ptr<ExplainPlanInfo> _explainPlanInfo;
         bool _alwaysCountMatches;
     };
+
+    /**
+     * Record explain events for a QueryOptimizerCursor, which may record some explain information
+     * for multiple clauses and plans through an internal implementation.
+     */
+    class QueryOptimizerCursorExplainStrategy : public MatchCountingExplainStrategy {
+    public:
+        // virtuals from ExplainRecordingStrategy
+/*
+LATER this is ignored in newExplainRecordingStrategy, hence this here.  Does
+it make a difference to call it?  If not, leave this out.
+*/
+        virtual void notePlan( bool scanAndOrder, bool indexOnly ) {};
+        
+        QueryOptimizerCursorExplainStrategy( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+                                            const shared_ptr<QueryOptimizerCursor> &cursor );
+    private:
+        virtual void _noteIterate( bool match, bool orderedMatch, bool loadedRecord,
+                                  bool chunkSkip );
+        virtual shared_ptr<ExplainQueryInfo> _doneQueryInfo();
+        shared_ptr<QueryOptimizerCursor> _cursor;
+    };
+
+    QueryOptimizerCursorExplainStrategy::QueryOptimizerCursorExplainStrategy
+    ( const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+     const shared_ptr<QueryOptimizerCursor> &cursor ) :
+    MatchCountingExplainStrategy( ancillaryInfo ),
+    _cursor( cursor ) {
+    }
+    
+    void QueryOptimizerCursorExplainStrategy::_noteIterate( bool match, bool orderedMatch,
+                                                           bool loadedRecord, bool chunkSkip ) {
+        // Note ordered matches only; if an unordered plan is selected, the explain result will
+        // be updated with reviseN().
+        _cursor->noteIterate( orderedMatch, loadedRecord, chunkSkip );
+    }
+
+    shared_ptr<ExplainQueryInfo> QueryOptimizerCursorExplainStrategy::_doneQueryInfo() {
+        return _cursor->explainQueryInfo();
+    }
+
+    shared_ptr<ExplainRecordingStrategy>
+    QueryOptimizerCursor::createExplainRecordingStrategy(
+        const ExplainQueryInfo::AncillaryInfo &ancillaryInfo,
+        const shared_ptr<Cursor> &pThis) {
+        /*
+          Another reason handling the explain recording strategy should be
+          inside the Cursor:  the explain strategy wants a specific cursor
+          type in this case.  Not clear if that's necessary.
+        */
+        shared_ptr<QueryOptimizerCursor> pQOC(dynamic_pointer_cast<QueryOptimizerCursor>(pThis));
+        verify(pQOC.get());
+
+        return shared_ptr<ExplainRecordingStrategy>(
+            new QueryOptimizerCursorExplainStrategy(
+                ancillaryInfo, pQOC));
+    }
     
     /**
      * This cursor runs a MultiPlanScanner iteratively and returns results from
@@ -372,7 +429,7 @@ namespace mongo {
         
         virtual BSONObj currKey() const {
             if ( _takeover ) {
-             	return _takeover->currKey();   
+                return _takeover->currKey();   
             }
             assertOk();
             return _currOp->currKey();
@@ -462,7 +519,7 @@ namespace mongo {
                 if ( getdupInternal( loc ) ) {
                     return true;   
                 }
-             	return _takeover->getsetdup( loc );   
+                return _takeover->getsetdup( loc );   
             }
             assertOk();
             return getsetdupInternal( loc );                
