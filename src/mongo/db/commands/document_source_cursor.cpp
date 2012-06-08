@@ -86,10 +86,21 @@ namespace mongo {
                  pCIM->matchesCurrent(pCursor.get())) &&
                 !pCursor->getsetdup(pCursor->currLoc())) {
 
-                /* grab the matching document */
-                BSONObj documentObj(pCursor->current());
-                pCurrent = Document::createFromBsonObj(
-                    &documentObj, NULL /* LATER pDependencies.get()*/);
+                const Projection::KeyOnly *pKeyOnly =
+                    pCursor->keyFieldsOnly();
+                if (false && pKeyOnly) { // TODO fix inside SERVER-5090
+                    BSONObj documentObj(pKeyOnly->hydrate(pCursor->currKey()));
+                    // TODO as below ....
+                    pCurrent = Document::createFromBsonObj(
+                        &documentObj, NULL /* LATER pDependencies.get()*/);
+                }
+                else {
+                    /* grab the matching document */
+                    BSONObj documentObj(pCursor->current());
+                    // TODO SERVER-5090 add the dependency map
+                    pCurrent = Document::createFromBsonObj(
+                        &documentObj, NULL /* LATER pDependencies.get()*/);
+                }
                 advanceAndYield();
                 return;
             }
@@ -115,6 +126,7 @@ namespace mongo {
             BSONObj bsonObj;
             
             pBuilder->append("query", *pQuery);
+            pBuilder->append("select", *pSelect);
 
             if (pSort.get())
             {
@@ -124,6 +136,7 @@ namespace mongo {
             // construct query for explain
             BSONObjBuilder queryBuilder;
             queryBuilder.append("$query", *pQuery);
+            // TODO SERVER-5090 add select-list (can't find any hints in dbclient.cpp
             if (pSort.get())
                 queryBuilder.append("$orderby", *pSort);
             queryBuilder.append("$explain", 1);
@@ -142,10 +155,9 @@ namespace mongo {
         const intrusive_ptr<ExpressionContext> &pCtx):
         DocumentSource(pCtx),
         pCurrent(),
-        bsonDependencies(),
         pCursor(pTheCursor),
-        pClientCursor(),
-        pDependencies() {
+        pDependencies(),
+        pClientCursor() {
         pClientCursor.reset(
             new ClientCursor(QueryOption_NoCursorTimeout, pTheCursor, ns));
     }
@@ -168,19 +180,28 @@ namespace mongo {
         pQuery = pBsonObj;
     }
 
+    void DocumentSourceCursor::setSelect(const shared_ptr<BSONObj> &pBsonObj) {
+        /*
+          Hand on to this dependency. The cursor may reference it later,
+          and we may need it for explain.
+        */
+        pSelect = pBsonObj;
+
+        /*
+          Extract the fields into a map so that we can look them up quickly
+          if we need them because we end up using Cursor::current() and fetching
+          the whole document in findNext().
+        */
+        // TODO SERVER-5090 $$$
+    }
+
     void DocumentSourceCursor::setSort(const shared_ptr<BSONObj> &pBsonObj) {
         pSort = pBsonObj;
     }
 
-    void DocumentSourceCursor::addBsonDependency(
-        const shared_ptr<BSONObj> &pBsonObj) {
-        bsonDependencies.push_back(pBsonObj);
-    }
-
-    void DocumentSourceCursor::manageDependencies(
-        const intrusive_ptr<DependencyTracker> &pTracker) {
-        /* hang on to the tracker */
-        pDependencies = pTracker;
+    void DocumentSourceCursor::keepAlive(
+        const shared_ptr<void> &pVoid) {
+        pDependencies.push_back(pVoid);
     }
 
 }

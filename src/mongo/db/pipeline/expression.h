@@ -1048,12 +1048,12 @@ namespace mongo {
          */
         size_t getFieldCount() const;
 
-        /*
-          Get a count of the exclusions.
+        /**
+           Determine if this is excluding paths or including them.
 
-          @returns how many fields have been excluded.
-        */
-        size_t getExclusionCount() const;
+           @returns true if paths are excluded, true otherwise
+         */
+        bool isExclusionMode() const;
 
         /*
           Specialized BSON conversion that allows for writing out a
@@ -1081,7 +1081,7 @@ namespace mongo {
                @param include if true, the path is included; if false, the path
                  is excluded
              */
-            virtual void path(const string &path, bool include) = 0;
+            virtual void path(const FieldPath &rPath, bool include) = 0;
         };
 
         /**
@@ -1090,25 +1090,8 @@ namespace mongo {
           fields.
 
           @param pSink where to write the paths to
-          @param pvPath pointer to a vector of strings describing the path on
-            descent; the top-level call should pass an empty vector
          */
         void emitPaths(PathSink *pPathSink) const;
-
-    private:
-        ExpressionObject();
-
-        void includePath(
-            const FieldPath *pPath, size_t pathi, size_t pathn,
-            bool excludeLast);
-
-        bool excludePaths;
-        set<string> path;
-
-        /* these two vectors are maintained in parallel */
-        vector<string> vFieldName;
-        vector<intrusive_ptr<Expression> > vpExpression;
-
 
         /*
           Utility function used by documentToBson().  Emits inclusion
@@ -1122,6 +1105,65 @@ namespace mongo {
         void emitPaths(PathSink *pPathSink, vector<string> *pvPath) const;
 
         /*
+          Utility object used with emitPaths().
+
+          Removes dependencies from a DependencyTracker.
+         */
+        class DependencyRemover :
+            public PathSink {
+        public:
+            // virtuals from PathSink
+            virtual void path(const FieldPath &rPath, bool include);
+
+            /*
+              Constructor.
+
+              Captures a reference to the smart pointer to the DependencyTracker
+              that this will remove dependencies from via
+              ExpressionObject::emitPaths().
+
+              @param pTracker reference to the smart pointer to the
+                DependencyTracker
+             */
+            DependencyRemover(const intrusive_ptr<DependencyTracker> &pTracker);
+
+        private:
+            DependencyTracker *pTracker;
+        };
+
+    private:
+        ExpressionObject();
+
+        void includePath(
+            const FieldPath *pPath, size_t pathi, size_t pathn,
+            bool excludeLast);
+
+        /*
+          Utility class used by adDependencies().
+         */
+        class DependencyAdder :
+            public PathSink {
+        public:
+            // virtuals from PathSink
+            virtual void path(const FieldPath &rPath, bool include);
+
+            DependencyAdder(const intrusive_ptr<DependencyTracker> &pTracker,
+                const DocumentSource *pSource);
+
+        private:
+            DependencyTracker *pTracker;
+            const DocumentSource *pSource;
+        };
+
+        bool excludePaths;
+        set<string> path;
+
+        /* these two vectors are maintained in parallel */
+        vector<string> vFieldName;
+        vector<intrusive_ptr<Expression> > vpExpression;
+
+
+        /*
           Utility object for collecting emitPaths() results in a BSON
           object.
          */
@@ -1129,7 +1171,7 @@ namespace mongo {
             public PathSink {
         public:
             // virtuals from PathSink
-            virtual void path(const string &path, bool include);
+            virtual void path(const FieldPath &rPath, bool include);
 
             /*
               Create a PathSink that writes paths to a BSONObjBuilder,
@@ -1364,6 +1406,15 @@ namespace mongo {
         return vFieldName.size();
     }
 
+    inline bool ExpressionObject::isExclusionMode() const {
+        return excludePaths;
+    }
+
+    inline ExpressionObject::DependencyRemover::DependencyRemover(
+        const intrusive_ptr<DependencyTracker> &pT):
+        pTracker(pT.get()) {
+    }
+
     inline ExpressionObject::BuilderPathSink::BuilderPathSink(
         BSONObjBuilder *pB):
         pBuilder(pB) {
@@ -1377,6 +1428,13 @@ namespace mongo {
 
     inline ExpressionObject::PathPusher::~PathPusher() {
         pvPath->pop_back();
+    }
+
+    inline ExpressionObject::DependencyAdder::DependencyAdder(
+        const intrusive_ptr<DependencyTracker> &pT,
+        const DocumentSource *pS):
+        pTracker(pT.get()),
+        pSource(pS) {
     }
 
 }

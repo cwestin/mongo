@@ -16,7 +16,9 @@
 
 #include "pch.h"
 #include "db/pipeline/field_path.h"
-#include "util/mongoutils/str.h"
+
+#include <boost/functional/hash.hpp> // $$$ TEMPORARY?
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
@@ -24,11 +26,48 @@ namespace mongo {
 
     const char FieldPath::prefix[] = "$";
 
+    ostream &operator<<(ostream &rStream, const FieldPath &rPath) {
+        rPath.writePath(rStream, FieldPath::prefix);
+        return rStream;
+    }
+
+    bool FieldPath::operator==(const FieldPath &rR) const {
+        // compare the shortest common length
+        const size_t lLen = vFieldName.size();
+        const size_t rLen = rR.vFieldName.size();
+        const size_t cmpLen = (lLen <= rLen) ? lLen : rLen;
+
+        for(size_t i = 0; i < cmpLen; ++i) {
+            const int cmp = vFieldName[i].compare(rR.vFieldName[i]);
+            if (cmp != 0)
+                return false;
+        }
+
+        if (lLen != rLen)
+            return false;
+
+        return true;
+    }
+
+    void FieldPath::hash_combine(size_t &seed) const {
+        const size_t n = vFieldName.size();
+        for(size_t i = 0; i < n; ++i)
+            boost::hash_combine(seed, vFieldName[i]);
+    }
+
     FieldPath::~FieldPath() {
     }
 
     FieldPath::FieldPath():
         vFieldName() {
+    }
+
+    FieldPath::FieldPath(const vector<string> &rStrings, size_t n):
+        vFieldName(n) {
+        verify(n <= rStrings.size());
+        for(size_t i = 0; i < n; ++i) {
+            vFieldName[i] = rStrings[i];
+        }
     }
 
     FieldPath::FieldPath(const string &fieldPath):
@@ -60,6 +99,29 @@ namespace mongo {
             /* next time, search starting one spot after that */
             startpos = dotpos + 1;
         }
+    }
+
+    FieldPath::FieldPath(const FieldPath &rOther):
+        vFieldName(rOther.vFieldName) {
+    }
+
+    bool FieldPath::isPrefixOf(const FieldPath &rOther) const {
+        const size_t preLength = rOther.vFieldName.size();
+
+        /*
+          If the length of the field path to be tested is longer, then it
+          can't be a prefix
+        */
+        if (preLength > vFieldName.size())
+            return false;
+
+        for(size_t i = 0; i < preLength; ++i) {
+            if (vFieldName[i].compare(rOther.vFieldName[i]) != 0)
+                return false;
+        }
+
+        /* if we got here, then everything matched */
+        return true;
     }
 
     string FieldPath::getPath(bool fieldPrefix) const {

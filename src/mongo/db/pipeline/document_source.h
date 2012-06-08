@@ -19,15 +19,16 @@
 #include "pch.h"
 
 #include <boost/unordered_map.hpp>
-#include "util/intrusive_counter.h"
-#include "client/parallel.h"
-#include "db/clientcursor.h"
-#include "db/jsobj.h"
-#include "db/pipeline/dependency_tracker.h"
-#include "db/pipeline/document.h"
-#include "db/pipeline/expression.h"
-#include "db/pipeline/value.h"
-#include "util/string_writer.h"
+#include "mongo/bson/bsonobj.h"
+#include "mongo/client/parallel.h"
+#include "mongo/db/clientcursor.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/db/pipeline/dependency_tracker.h"
+#include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/expression.h"
+#include "mongo/db/pipeline/value.h"
+#include "mongo/util/intrusive_counter.h"
+#include "mongo/util/string_writer.h"
 
 namespace mongo {
     class Accumulator;
@@ -150,7 +151,12 @@ namespace mongo {
         /**
            Adjust dependencies according to the needs of this source.
 
-           $$$ MONGO_LATER_SERVER_4644
+           This source is given a chance to adjust the current set of
+           dependencies according to what the source does. See documentation
+           in the DependencyTracker class for what is required.
+
+           The default implementation does nothing.
+
            @param pTracker the dependency tracker
          */
         virtual void manageDependencies(
@@ -319,8 +325,6 @@ namespace mongo {
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
         virtual void setSource(DocumentSource *pSource);
-        virtual void manageDependencies(
-            const intrusive_ptr<DependencyTracker> &pTracker);
 
         /**
           Create a document source based on a cursor.
@@ -370,6 +374,29 @@ namespace mongo {
         void setSort(const shared_ptr<BSONObj> &pBsonObj);
 
         /**
+           Record the select list that was specified forthe cursor this wraps.
+
+           This will get used to determine which fields are copied from the
+           cursor and passed downstream.
+
+           @param pBsonObj the select list
+         */
+        void setSelect(const shared_ptr<BSONObj> &pBsonObj);
+
+        /**
+           Keep dependencies alive.
+
+           The existing Cursor mechanics depend on a number of artifacts
+           that need to be kept around because other parts of the implementation
+           assume that they are local variables, they are passed by reference,
+           and are not copied.
+
+           @param pVoid pointer to an object to be kept alive; see
+             http://www.boost.org/doc/libs/1_49_0/libs/smart_ptr/sp_techniques.html#pvoid
+         */
+        void keepAlive(const shared_ptr<void> &pVoid);
+
+        /**
            Release the cursor, but without changing the other data.  This
            is used for the explain version of pipeline execution.
          */
@@ -395,8 +422,9 @@ namespace mongo {
           in order cause its destructor to be called *after* pCursor's.
          */
         shared_ptr<BSONObj> pQuery;
+        shared_ptr<BSONObj> pSelect;
         shared_ptr<BSONObj> pSort;
-        vector<shared_ptr<BSONObj> > bsonDependencies;
+        vector<shared_ptr<void> > pDependencies;
         shared_ptr<Cursor> pCursor;
 
         /*
@@ -412,39 +440,6 @@ namespace mongo {
           client cursor, and throw an error.
          */
         void advanceAndYield();
-
-        /*
-          This document source hangs on to the dependency tracker when it
-          gets it so that it can be used for selective reification of
-          fields in order to avoid fields that are not required through the
-          pipeline.
-         */
-        intrusive_ptr<DependencyTracker> pDependencies;
-
-        /**
-           (5/14/12 - moved this to private because it's not used atm)
-           Add a BSONObj dependency.
-
-           Some Cursor creation functions rely on BSON objects to specify
-           their query predicate or sort.  These often take a BSONObj
-           by reference for these, but do not copy it.  As a result, the
-           BSONObjs specified must outlive the Cursor.  In order to ensure
-           that, use this to preserve a pointer to the BSONObj here.
-
-           From the outside, you must also make sure the BSONObjBuilder
-           creates a lasting copy of the data, otherwise it will go away
-           when the builder goes out of scope.  Therefore, the typical usage
-           pattern for this is 
-           {
-               BSONObjBuilder builder;
-               // do stuff to the builder
-               shared_ptr<BSONObj> pBsonObj(new BSONObj(builder.obj()));
-               pDocumentSourceCursor->addBsonDependency(pBsonObj);
-           }
-
-           @param pBsonObj pointer to the BSON object to preserve
-         */
-        void addBsonDependency(const shared_ptr<BSONObj> &pBsonObj);
     };
 
 
@@ -507,6 +502,8 @@ namespace mongo {
         virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
         virtual void optimize();
         virtual const char *getSourceName() const;
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
 
         /**
           Create a filter.
@@ -569,6 +566,8 @@ namespace mongo {
         virtual bool advance();
         virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
 
         /**
           Create a new grouping DocumentSource.
@@ -726,6 +725,50 @@ namespace mongo {
         DocumentSourceMatch(const BSONObj &query,
             const intrusive_ptr<ExpressionContext> &pExpCtx);
 
+        class DependencySink {
+        public:
+            virtual ~DependencySink() {};
+            /**
+               Register a dependency
+
+               @param path the field name depended on
+            */
+            virtual void dependency(const string &path) = 0;
+        };
+
+        /**
+           Visit a MongoDB query object, and send its field name references
+           to a DependencySink.
+
+           Does a recursive descent visit of the query spec in order to
+           get past any $or and $and clauses. Assumes all other keys are
+           field names. Using this was considered more reliable than attempting
+           to modify the Matcher to yield the same information.
+
+           @param pSink the sink to send dependencies to
+           @param pBsonObj part of the query spec
+         */
+        static void visitDependencies(
+            DependencySink *pSink, const BSONObj *pBsonObj);
+
+        /*
+          Utility DependencySink used with visitDependencies to write them
+          to a DependencyTracker.
+         */
+        class Tracker :
+            public DependencySink {
+        public:
+            // virtuals from DependencySink
+            virtual void dependency(const string &path);
+
+            Tracker(DependencyTracker *pTracker, DocumentSourceMatch *pSource);
+
+        private:
+            DocumentSourceMatch *pSource;
+            DependencyTracker *pTracker;
+        };
+
+        BSONObj query; /* copy of the original query */
         Matcher matcher;
     };
 
@@ -844,33 +887,6 @@ namespace mongo {
         /*
           Utility object used by manageDependencies().
 
-          Removes dependencies from a DependencyTracker.
-         */
-        class DependencyRemover :
-            public ExpressionObject::PathSink {
-        public:
-            // virtuals from PathSink
-            virtual void path(const string &path, bool include);
-
-            /*
-              Constructor.
-
-              Captures a reference to the smart pointer to the DependencyTracker
-              that this will remove dependencies from via
-              ExpressionObject::emitPaths().
-
-              @param pTracker reference to the smart pointer to the
-                DependencyTracker
-             */
-            DependencyRemover(const intrusive_ptr<DependencyTracker> &pTracker);
-
-        private:
-            const intrusive_ptr<DependencyTracker> &pTracker;
-        };
-
-        /*
-          Utility object used by manageDependencies().
-
           Checks dependencies to see if they are present.  If not, then
           throws a user error.
          */
@@ -878,7 +894,7 @@ namespace mongo {
             public ExpressionObject::PathSink {
         public:
             // virtuals from PathSink
-            virtual void path(const string &path, bool include);
+            virtual void path(const FieldPath &rPath, bool include);
 
             /*
               Constructor.
@@ -892,11 +908,11 @@ namespace mongo {
               @param pThis the projection that is making this request
              */
             DependencyChecker(
-                const intrusive_ptr<DependencyTracker> &pTracker,
+                const intrusive_ptr<const DependencyTracker> &pTracker,
                 const DocumentSourceProject *pThis);
 
         private:
-            const intrusive_ptr<DependencyTracker> &pTracker;
+            const DependencyTracker *pTracker;
             const DocumentSourceProject *pThis;
         };
     };
@@ -1242,15 +1258,10 @@ namespace mongo {
         pIdExpression = pExpression;
     }
 
-    inline DocumentSourceProject::DependencyRemover::DependencyRemover(
-        const intrusive_ptr<DependencyTracker> &pT):
-        pTracker(pT) {
-    }
-
     inline DocumentSourceProject::DependencyChecker::DependencyChecker(
-        const intrusive_ptr<DependencyTracker> &pTrack,
+        const intrusive_ptr<const DependencyTracker> &pTrack,
         const DocumentSourceProject *pT):
-        pTracker(pTrack),
+        pTracker(pTrack.get()),
         pThis(pT) {
     }
 
@@ -1259,6 +1270,12 @@ namespace mongo {
         pUnwindArray.reset();
         pUnwinder.reset();
         pUnwindValue.reset();
+    }
+
+    inline DocumentSourceMatch::Tracker::Tracker(
+        DependencyTracker *pT, DocumentSourceMatch *pS):
+        pSource(pS),
+        pTracker(pT) {
     }
 
 }

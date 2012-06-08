@@ -79,16 +79,47 @@ namespace mongo {
     }
 
     DocumentSourceMatch::DocumentSourceMatch(
-        const BSONObj &query,
+        const BSONObj &theQuery,
         const intrusive_ptr<ExpressionContext> &pExpCtx):
         DocumentSourceFilterBase(pExpCtx),
+        query(theQuery.copy()),
         matcher(query) {
+    }
+
+    void DocumentSourceMatch::visitDependencies(
+        DependencySink *pSink, const BSONObj *pBsonObj) {
+        BSONObjIterator bsonIterator(*pBsonObj);
+        while(bsonIterator.more()) {
+            BSONElement bsonElement(bsonIterator.next());
+            const char *pFieldName = bsonElement.fieldName();
+
+            /* if it's not $or or $and, then it must be a fieldname */
+            if (strcmp(pFieldName, "$or") && strcmp(pFieldName, "$and"))
+                pSink->dependency(pFieldName);
+            else {
+                /* visit all the operand objects */
+                verify(bsonElement.type() == Array);
+                BSONObjIterator logicalOperands(bsonElement.Obj());
+                while(logicalOperands.more()) {
+                    BSONElement operandElement(logicalOperands.next());
+                    BSONObj operand(operandElement.Obj());
+                    visitDependencies(pSink, &operand);
+                }
+            }
+        }
     }
 
     void DocumentSourceMatch::manageDependencies(
         const intrusive_ptr<DependencyTracker> &pTracker) {
-#ifdef MONGO_LATER_SERVER_4644
-        verify(false); // $$$ implement dependencies on Matcher
-#endif /* MONGO_LATER_SERVER_4644 */
+
+        /* collect the dependencies */
+        Tracker tracker(pTracker.get(), this);
+        visitDependencies(&tracker, &query);
     }
+
+    void DocumentSourceMatch::Tracker::dependency(const string &path) {
+        FieldPath fieldPath(path);
+        pTracker->addDependency(fieldPath, pSource);
+    }
+
 }

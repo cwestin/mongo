@@ -631,7 +631,7 @@ namespace mongo {
     void ExpressionCoerceToBool::addDependencies(
         const intrusive_ptr<DependencyTracker> &pTracker,
         const DocumentSource *pSource) const {
-        /* nothing to do */
+        pExpression->addDependencies(pTracker, pSource);
     }
 
     intrusive_ptr<const Value> ExpressionCoerceToBool::evaluate(
@@ -1162,9 +1162,28 @@ namespace mongo {
         return intrusive_ptr<Expression>(this);
     }
 
+    void ExpressionObject::DependencyRemover::path(
+        const FieldPath &rPath, bool include) {
+        if (include)
+            pTracker->removeDependency(rPath);
+    }
+
+    void ExpressionObject::DependencyAdder::path(
+        const FieldPath &rPath, bool include) {
+        if (include)
+            pTracker->addDependency(rPath, pSource);
+    }
+
     void ExpressionObject::addDependencies(
         const intrusive_ptr<DependencyTracker> &pTracker,
         const DocumentSource *pSource) const {
+
+        /* depend on the included field paths */
+        DependencyAdder dependencyAdder(pTracker, pSource);
+        vector<string> vPath;
+        emitPaths(&dependencyAdder, &vPath);
+
+        /* add the dependencies from the computed expressions */
         for(ExpressionVector::const_iterator i(vpExpression.begin());
             i != vpExpression.end(); ++i) {
             (*i)->addDependencies(pTracker, pSource);
@@ -1561,8 +1580,8 @@ namespace mongo {
     }
 
     void ExpressionObject::BuilderPathSink::path(
-        const string &path, bool include) {
-        pBuilder->append(path, include);
+        const FieldPath &rFieldPath, bool include) {
+        pBuilder->append(rFieldPath.getPath(false), include);
     }
 
     /* --------------------- ExpressionFieldPath --------------------------- */

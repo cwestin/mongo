@@ -227,43 +227,46 @@ IncludeExclude:
         return pProject;
     }
 
-    void DocumentSourceProject::DependencyRemover::path(
-        const string &path, bool include) {
-        if (include)
-            pTracker->removeDependency(path);
-    }
-
     void DocumentSourceProject::DependencyChecker::path(
-        const string &path, bool include) {
+        const FieldPath &rPath, bool include) {
         /* if the specified path is included, there's nothing to check */
         if (include)
             return;
 
         /* if the specified path is excluded, see if it is required */
-        intrusive_ptr<const DocumentSource> pSource;
-        if (pTracker->getDependency(&pSource, path)) {
-            uassert(15984, str::stream() <<
-                    "unable to satisfy dependency on " <<
-                    FieldPath::getPrefix() <<
-                    path << " in pipeline step " <<
-                    pSource->getPipelineStep() <<
-                    " (" << pSource->getSourceName() << "), because step " <<
-                    pThis->getPipelineStep() << " ("
-                    << pThis->getSourceName() << ") excludes it",
-                    false); // printf() is way easier to read than this crap
-        }
+        const DocumentSource *pSource;
+        if ((pSource = pTracker->getDependency(rPath)))
+            DependencyTracker::reportUnsatisfied(rPath, pSource, pThis);
     }
 
     void DocumentSourceProject::manageDependencies(
         const intrusive_ptr<DependencyTracker> &pTracker) {
+
+        /*
+          If the $project is in "inclusionary mode," then it produces
+          a closed result set
+        */
+        if (!pEO->isExclusionMode())
+            pTracker->setClosedSet();
+
         /*
           Look at all the products (inclusions and computed fields) of this
-          projection.  For each one that is a dependency, remove it from the
-          list of dependencies, because this product will satisfy that
+          projection.  For each one that is currently a dependency, remove it
+          from the list of dependencies, because this product will satisfy that
           dependency.
+
+          First look at the included paths
          */
-        DependencyRemover dependencyRemover(pTracker);
+        ExpressionObject::DependencyRemover dependencyRemover(pTracker);
         pEO->emitPaths(&dependencyRemover);
+
+        /* the computed expressions are also products */
+        intrusive_ptr<Iterator<string> > pFieldIter(pEO->getFieldIterator());
+        while(pFieldIter->hasNext()) {
+            string fieldName(pFieldIter->next());
+            FieldPath fieldPath(fieldName);
+            pTracker->removeDependency(fieldPath);
+        }
 
         /*
           Look at the exclusions of this projection.  If any of them are

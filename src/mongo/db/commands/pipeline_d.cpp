@@ -15,11 +15,13 @@
  */
 
 #include "pch.h"
-#include "db/commands/pipeline.h"
-#include "db/commands/pipeline_d.h"
+#include "mongo/db/commands/pipeline_d.h"
 
-#include "db/cursor.h"
-#include "db/pipeline/document_source.h"
+#include "mongo/db/cursor.h"
+#include "mongo/db/queryutil.h"
+#include "mongo/db/commands/pipeline.h"
+#include "mongo/db/pipeline/dependency_tracker.h"
+#include "mongo/db/pipeline/document_source.h"
 
 
 namespace mongo {
@@ -30,6 +32,34 @@ namespace mongo {
         const intrusive_ptr<ExpressionContext> &pExpCtx) {
 
         Pipeline::SourceVector *pSources = &pPipeline->sourceVector;
+
+        /*
+          Analyze dependency information.
+
+          At this point, all external static optimizations should have been
+          done. The only other changes that could happen to the pipeline after
+          this are to remove initial $match or $sort items because they will
+          be handled by the underlying query. But we need to analyze the
+          dependencies before that so that references in those are included
+          in the dependency analysis.
+
+          This checks dependencies from the end of the pipeline back to the
+          front of it, and finally passes that to the input source before we
+          execute the pipeline.
+        */
+        intrusive_ptr<DependencyTracker> pTracker(DependencyTracker::create());
+        for(Pipeline::SourceVector::reverse_iterator iter(pSources->rbegin()),
+                listBeg(pSources->rend()); iter != listBeg; ++iter) {
+            intrusive_ptr<DocumentSource> pTemp(*iter);
+            pTemp->manageDependencies(pTracker);
+        }
+
+        DEV {
+            /* list the dependencies in the log for development */
+            stringstream ss;
+            pTracker->listDependencies(ss);
+            (log() << ss.str()).flush();
+        }
 
         /* look for an initial match */
         BSONObjBuilder queryBuilder;
@@ -55,6 +85,38 @@ namespace mongo {
         shared_ptr<BSONObj> pQueryObj(new BSONObj(queryBuilder.obj()));
 
         /*
+          If the result set is closed, we can limit the fields we fetch.
+          There are two parts to that:
+          (1) Try to do an index-only query. To do this, we supply a
+          ParsedQuery with the select-list when we create the cursor.
+          TODO This also requires the flag from SERVER-6023 in order not to
+          gum up a sort
+          (2) Supply DocumentSourceCursor with the list so that it only
+          passes along the required fields whether (1) happens or not.
+
+          Either way, we need to build a select-list.
+        */
+        BSONObjBuilder selectBuilder;
+        if (pTracker->isClosedSet())
+            pTracker->buildSelectList(&selectBuilder);
+        shared_ptr<BSONObj> pSelectObj(new BSONObj(selectBuilder.obj()));
+
+        /*
+          In order to send the select-list into the Cursor factory below,
+          we need a ParsedQuery.
+
+          LATER: if the query engine survives in its current form, early
+          limits and skips may also be optimized here. Ideally, we get
+          redo the query engine to be based on DocumentSources, and this all
+          gets a lot simpler.
+         */
+        string fullName(dbName + "." + pPipeline->getCollectionName());
+        shared_ptr<ParsedQuery> pParsedQuery(
+            new ParsedQuery(fullName.c_str(), 0, 0, 0,
+                            *pQueryObj, *pSelectObj));
+        // TODO use this in the getCursor() calls below SERVER-5090
+
+        /*
           Look for an initial sort; we'll try to add this to the
           Cursor we create.  If we're successful in doing that (further down),
           we'll remove the $sort from the pipeline, because the documents
@@ -75,9 +137,6 @@ namespace mongo {
 
         /* Create the sort object; see comments on the query object above */
         shared_ptr<BSONObj> pSortObj(new BSONObj(sortBuilder.obj()));
-
-        /* get the full "namespace" name */
-        string fullName(dbName + "." + pPipeline->getCollectionName());
 
         /* for debugging purposes, show what the query and sort are */
         DEV {
@@ -142,15 +201,20 @@ namespace mongo {
         pSource->setNamespace(fullName);
 
         /*
-          Note the query and sort
+          Note the query, select, and sort
 
           This records them for explain, and keeps them alive; they are
           referenced (by reference) by the cursor, which doesn't make its
           own copies of them.
         */
         pSource->setQuery(pQueryObj);
+        pSource->setSelect(pSelectObj);
         if (initSort)
             pSource->setSort(pSortObj);
+
+        shared_ptr<void> pVoid(
+            static_pointer_cast<void, ParsedQuery>(pParsedQuery));
+        pSource->keepAlive(pVoid);
 
         return pSource;
     }

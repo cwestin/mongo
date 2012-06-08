@@ -102,4 +102,10 @@ namespace mongo {
     void DocumentSourceFilter::toMatcherBson(BSONObjBuilder *pBuilder) const {
         pFilter->toMatcherBson(pBuilder);
     }
+
+    void DocumentSourceFilter::manageDependencies(
+        const intrusive_ptr<DependencyTracker> &pTracker) {
+        verify(false); // unimplemented
+    }
+
 }

@@ -27,9 +27,28 @@ namespace mongo {
         /**
            Constructor.
 
+           Creates a FieldPath from a dotted path string.
+
            @param fieldPath the dotted field path string
          */
         FieldPath(const string &fieldPath);
+
+        /**
+           Constructor.
+
+           Creates a FieldPath from part of a vector of strings.
+
+           @param fieldVector a list of path elements
+           @param n the number of path elements to use from fieldVector
+        */
+        FieldPath(const vector<string> &rStrings, size_t n);
+
+        /**
+           Copy constructor.
+
+           @param rOther the other FieldPath
+         */
+        FieldPath(const FieldPath &rOther);
 
         /**
            Constructor.
@@ -75,6 +94,31 @@ namespace mongo {
         FieldPath &operator=(const FieldPath &rRHS);
 
         /**
+           Check to see if the argument is a prefix of this FieldPath.
+
+           @param rOther the argument to test
+         */
+        bool isPrefixOf(const FieldPath &rOther) const;
+
+        /**
+           Hash a field path.
+
+           @param seed the current has being computed, as per
+             boost::hash_combine()
+        */
+        void hash_combine(size_t &seed) const;
+
+        /**
+           Equality operator for FieldPaths.
+
+           @param rR right hand side of equality test
+           @returns true if the FieldPaths are equal, false otherwise
+         */
+        bool operator==(const FieldPath &rR) const;
+
+        friend ostream &operator<<(ostream &rStream, const FieldPath &rPath);
+
+        /**
            Get the prefix string.
 
            @returns the prefix string
@@ -86,6 +130,8 @@ namespace mongo {
     private:
         vector<string> vFieldName;
     };
+
+    ostream &operator<<(ostream &rStream, const FieldPath &rPath);
 }
 
 
@@ -106,4 +152,3 @@ namespace mongo {
     }
 
 }
-

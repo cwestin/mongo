@@ -395,4 +395,41 @@ namespace mongo {
 
         return pMerger;
     }
+
+    void DocumentSourceGroup::manageDependencies(
+        const intrusive_ptr<DependencyTracker> &pTracker) {
+
+        /* $group produces a closed set of output fields */
+        pTracker->setClosedSet();
+
+        /* remove the products from the list of dependencies */
+        FieldPath idFieldPath(Document::idName);
+        pTracker->removeDependency(idFieldPath);
+        ExpressionObject *pEO =
+            dynamic_cast<ExpressionObject *>(pIdExpression.get());
+        if (pEO) {
+            vector<string> vPath;
+            vPath.push_back(Document::idName);
+            ExpressionObject::DependencyRemover dependencyRemover(pTracker);
+            pEO->emitPaths(&dependencyRemover, &vPath);
+        }
+
+        for(vector<string>::const_iterator fieldIterator(vFieldName.begin());
+            fieldIterator != vFieldName.end(); ++fieldIterator) {
+            FieldPath fieldPath(*fieldIterator);
+            pTracker->removeDependency(fieldPath);
+        }
+
+        /* complain that any remaining dependencies aren't satisfied */
+        pTracker->reportFirstUnsatisfied(this);
+
+        /* for computed expressions, add dependencies */
+        pIdExpression->addDependencies(pTracker, this);
+        for(vector<intrusive_ptr<Expression> >::const_iterator
+                exprIterator(vpExpression.begin());
+            exprIterator != vpExpression.end(); ++exprIterator) {
+            (*exprIterator)->addDependencies(pTracker, this);
+        }
+    }
+
 }
